@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Three.js 數位分身 - 第一人稱行走與開門互動</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #000;
+    }
+
+    /* 🟢 CSS 十字準心 (HTML 控制) */
+    #crosshair {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 20px;
+      height: 20px;
+      margin-left: -10px;
+      margin-top: -10px;
+      pointer-events: none;
+      /* 讓準心不影響點擊 */
+      z-index: 100;
+    }
+
+    #crosshair::before,
+    #crosshair::after {
+      content: '';
+      position: absolute;
+      background: white;
+      border-radius: 1px;
+    }
+
+    /* 水平線 */
+    #crosshair::before {
+      top: 50%;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      margin-top: -1px;
+    }
+
+    /* 垂直線 */
+    #crosshair::after {
+      left: 50%;
+      top: 0;
+      height: 100%;
+      width: 2px;
+      margin-left: -1px;
+    }
+
+    /* 行走指令提示 */
+    #instructions {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      color: white;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px;
+      border-radius: 5px;
+      font-family: sans-serif;
+      pointer-events: none;
+      z-index: 50;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="crosshair"></div>
+  <div id="instructions">
+    👉 點擊畫面開始步入<br>
+    W/A/S/D：行走 | 滑鼠：轉向 | 點擊門：開關門
+  </div>
+
+  <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/examples/jsm/loaders/GLTFLoader": "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js",
+            "three/examples/jsm/loaders/EXRLoader": "https://unpkg.com/three@0.160.0/examples/jsm/loaders/EXRLoader.js",
+            "three/examples/jsm/controls/PointerLockControls": "https://unpkg.com/three@0.160.0/examples/jsm/controls/PointerLockControls.js"
+        }
+    }
+    </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+    import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader';
+    import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls';
+
+    // ===== 1. 初始化基礎場景 =====
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+    // 🟢 設定初始視線高度 (例如 1.6 米)
+    camera.position.set(0, 1.6, 5);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    document.body.appendChild(renderer.domElement);
+
+    // ===== 2. 載入環境照明 =====
+    new EXRLoader().load('hdri/studio.exr', (hdrTexture) => {
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmrem.fromEquirectangular(hdrTexture).texture;
+      pmrem.dispose();
+    });
+
+    // ===== 3. 第一人稱控制器 (PointerLockControls) =====
+    const controls = new PointerLockControls(camera, renderer.domElement);
+
+    // 🟢 點擊畫面時鎖定滑鼠並開始
+    const instructions = document.getElementById('instructions');
+    renderer.domElement.addEventListener('click', () => {
+      controls.lock();
+    });
+
+    controls.addEventListener('lock', () => {
+      instructions.style.display = 'none';
+    });
+
+    controls.addEventListener('unlock', () => {
+      instructions.style.display = 'block';
+    });
+
+    scene.add(controls.getObject()); // 將相機載體加入場景
+
+    // ===== 4. 行走邏輯控制 =====
+    let moveForward = false;
+    let moveBackward = false;
+    let moveLeft = false;
+    let moveRight = false;
+
+    const velocity = new THREE.Vector3(); // 移動速度
+    const direction = new THREE.Vector3(); // 移動方向
+    let prevTime = performance.now(); // 用於計算時間差
+
+    // 🟢 鍵盤按下事件
+    const onKeyDown = (event) => {
+      switch (event.code) {
+        case 'KeyW': moveForward = true; break;
+        case 'KeyA': moveLeft = true; break;
+        case 'KeyS': moveBackward = true; break;
+        case 'KeyD': moveRight = true; break;
+      }
+    };
+
+    // 🟢 鍵盤放開事件
+    const onKeyUp = (event) => {
+      switch (event.code) {
+        case 'KeyW': moveForward = false; break;
+        case 'KeyA': moveLeft = false; break;
+        case 'KeyS': moveBackward = false; break;
+        case 'KeyD': moveRight = false; break;
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+
+    // ===== 5. 開門互動邏輯 (Raycaster) =====
+    const raycaster = new THREE.Raycaster();
+    const doorObjects = []; // 存儲場景中所有可互動的門
+
+    // 🟢 點擊事件 (開門)
+    document.addEventListener('click', () => {
+      if (!controls.isLocked) return; // 只有在鎖定滑鼠時才觸發
+
+      // 從相機中心發射射線
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+
+      // 檢查射線是否擊中門物件
+      const intersects = raycaster.intersectObjects(doorObjects);
+
+      if (intersects.length > 0) {
+        const door = intersects[0].object;
+        console.log("🎯 射中門物件:", door.name); // 點擊時這行會出現在 Console
+        toggleDoor(door); // 觸發開關門函數
+      } else {
+        console.log("空包彈，沒射中任何在 doorObjects 清單中的門");
+      }
+    });
+
+    // 🟢 開關門函數
+    function toggleDoor(door) {
+      if (door.userData.isOpen === undefined) {
+        door.userData.isOpen = false;
+      }
+
+      // 根據門的名字設定開門方向 (配合你提到的命名)
+      let openAngle = Math.PI / 2; // 預設 90 度
+      if (door.name === "out_door") {
+        openAngle = -Math.PI / 2; // 外門往反方向開
+      }
+
+      if (door.userData.isOpen) {
+        door.rotation.y = 0;
+        door.userData.isOpen = false;
+        console.log(door.name + " 已關門");
+      } else {
+        door.rotation.y = openAngle;
+        door.userData.isOpen = true;
+        console.log(door.name + " 已開門");
+      }
+    }
+
+    // ===== 6. 模型載入 (關鍵：分離門物件) =====
+    const loader = new GLTFLoader();
+
+    loader.load('models/20260228cad-3d-gltf.glb', (gltf) => {
+      const model = gltf.scene;
+
+      model.traverse((mesh) => {
+        if (!mesh.isMesh) return;
+
+        // 🔴 加入這行：這會列出模型中所有物件的名字，讓你在瀏覽器 F12 看到
+        console.log("發現物件名稱:", mesh.name);
+
+        // 💡 關鍵：判斷門物件的名字
+        // 請確認你的 Blender 中，門物件的名字包含 "Door" 或 "門"
+        if (mesh.name.toLowerCase().includes("door") || mesh.name.includes("門")) {
+          doorObjects.push(mesh); // 將門加入可點擊列表
+          mesh.userData.isOpen = false; // 設定門的初始狀態為關閉
+        }
+
+        // 處理內建 AO (沿用之前的邏輯)
+        if (mesh.material.aoMap) {
+          mesh.material.aoMap.channel = 1;
+          mesh.material.aoMapIntensity = 1.0;
+          mesh.material.aoMap.flipY = false;
+        }
+
+        // UV2 修正
+        if (!mesh.geometry.attributes.uv2 && mesh.geometry.attributes.uv1) {
+          mesh.geometry.setAttribute('uv2', mesh.geometry.attributes.uv1);
+        }
+
+        mesh.material.needsUpdate = true;
+      });
+
+      scene.add(model);
+    });
+
+    // ===== 7. 動態循環 (核心行走更新) =====
+    function animate() {
+      requestAnimationFrame(animate);
+
+      if (controls.isLocked) {
+        const time = performance.now();
+        const delta = (time - prevTime) / 1000; // 計算時間差 (秒)
+
+        // 🟢 阻尼 (滑動感)，數值越大停止越快
+        velocity.x -= velocity.x * 10.0 * delta;
+        velocity.z -= velocity.z * 10.0 * delta;
+
+        // 🟢 根據鍵盤狀態設定移動方向
+        direction.z = Number(moveForward) - Number(moveBackward);
+        direction.x = Number(moveRight) - Number(moveLeft);
+        direction.normalize(); // 確保斜向移動不會變快
+
+        // 🟢 移動速度設定 (例如 30 米/秒^2 的加速度)
+        if (moveForward || moveBackward) velocity.z -= direction.z * 30.0 * delta;
+        if (moveLeft || moveRight) velocity.x -= direction.x * 30.0 * delta;
+
+        // 🟢 更新控制器位置
+        controls.moveRight(-velocity.x * delta);
+        controls.moveForward(-velocity.z * delta);
+
+        prevTime = time;
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // 響應視窗大小
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+
+</html>
