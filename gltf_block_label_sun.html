@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Three.js 數位分身 - 完整修正版</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #000;
+    }
+
+    #loading-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background-color: #121212;
+      /* 深色背景更專業 */
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 9999;
+      /* 最上層 */
+      transition: opacity 0.8s ease-out;
+      /* 消失時的平滑度 */
+      transition: opacity 1.2s cubic-bezier(0.4, 0, 0.2, 1),
+        transform 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    /* 這是被 JS 加入的 Class */
+    #loading-screen.fade-out {
+      opacity: 0;
+      transform: scale(1.05);
+      /* 輕微放大，像是鏡頭推進去 */
+      pointer-events: none;
+      /* 點擊穿透 */
+    }
+
+    .loader-container {
+      text-align: center;
+      font-family: '微軟正黑體', sans-serif;
+    }
+
+    .leaf-icon {
+      font-size: 50px;
+      margin-bottom: 20px;
+      animation: leaf-bounce 1.5s infinite ease-in-out;
+    }
+
+    /* 簡單的上下跳動動畫 */
+    @keyframes leaf-bounce {
+
+      0%,
+      100% {
+        transform: translateY(0);
+      }
+
+      50% {
+        transform: translateY(-15px);
+      }
+    }
+
+    .progress-wrapper {
+      width: 250px;
+      height: 6px;
+      background: #333;
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 10px auto;
+    }
+
+    #loader-bar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #76b852, #8DC26F);
+      /* 多肉綠漸層 */
+      box-shadow: 0 0 10px rgba(118, 184, 82, 0.5);
+      transition: width 0.4s ease;
+    }
+
+    #loader-text {
+      color: #8DC26F;
+      font-size: 14px;
+      letter-spacing: 1px;
+    }
+
+    /* 🟢 十字準心 */
+    #crosshair {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 20px;
+      height: 20px;
+      margin-left: -10px;
+      margin-top: -10px;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    #crosshair::before,
+    #crosshair::after {
+      content: '';
+      position: absolute;
+      background: white;
+      border-radius: 1px;
+    }
+
+    #crosshair::before {
+      top: 50%;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      margin-top: -1px;
+    }
+
+    #crosshair::after {
+      left: 50%;
+      top: 0;
+      height: 100%;
+      width: 2px;
+      margin-left: -1px;
+    }
+
+    /* 🟢 指令提示 */
+    #instructions {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      color: white;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px;
+      border-radius: 5px;
+      font-family: sans-serif;
+      pointer-events: none;
+      z-index: 50;
+    }
+
+    /* 🟢 標籤樣式 (含平滑淡出過渡) */
+    .door-label {
+      color: #00ffcc;
+      font-family: sans-serif;
+      padding: 5px 15px;
+      background: rgba(0, 40, 40, 0.6);
+      border: 1px solid #00ffcc;
+      border-radius: 4px;
+      font-size: 14px;
+      pointer-events: none;
+      box-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+      animation: breathe 2s infinite ease-in-out;
+      transition: opacity 0.3s ease;
+      opacity: 0;
+      /* 預設值 */
+    }
+
+    @keyframes breathe {
+
+      0%,
+      100% {
+        box-shadow: 0 0 5px #00ffcc;
+      }
+
+      50% {
+        box-shadow: 0 0 20px #00ffcc;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="loading-screen">
+    <div class="loader-container">
+      <div class="leaf-icon">🌿</div>
+      <div class="progress-wrapper">
+        <div id="loader-bar"></div>
+      </div>
+      <div id="loader-text">正在組裝... 0%</div>
+    </div>
+  </div>
+
+  <div id="crosshair"></div>
+  <div id="instructions">
+    👉 點擊畫面開始步入<br>
+    W/A/S/D：行走 滑鼠：轉向 | 點擊門：開關門
+  </div>
+
+  <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/examples/jsm/loaders/DRACOLoader": "https://unpkg.com/three@0.160.0/examples/jsm/loaders/DRACOLoader.js",
+            "three/examples/jsm/loaders/GLTFLoader": "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js",
+            "three/examples/jsm/loaders/EXRLoader": "https://unpkg.com/three@0.160.0/examples/jsm/loaders/EXRLoader.js",
+            "three/examples/jsm/controls/PointerLockControls": "https://unpkg.com/three@0.160.0/examples/jsm/controls/PointerLockControls.js",
+            "three/examples/jsm/renderers/CSS2DRenderer": "https://unpkg.com/three@0.160.0/examples/jsm/renderers/CSS2DRenderer.js"
+        }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+    import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader';
+    import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls';
+    import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer';
+    import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader';
+
+    // 1. 設定 Draco 解壓縮 (因為你匯出時有勾選 Draco)
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+
+    // ===== 1. 基礎設定 =====
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(20, 1.5, 4);
+    camera.lookAt(0, 1.5, 0);
+
+    // 手動設定太陽在天空的位置
+    // 假設你有一個模型叫 desk，可以 sunLight.target = desk;
+    // 或者設定一個特定座標
+    const sunLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    sunLight.position.set(15, 15, 0);
+    scene.add(sunLight); // 此時 scene 已經存在，不會報錯
+    const helper = new THREE.DirectionalLightHelper(sunLight, 5); // 5 是輔助線的大小, 畫出太陽位置
+    scene.add(helper);
+    scene.add(sunLight.target); // 記得要把 target 也加入場景，方向才會更新
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+
+    // --- 場景環境強度 ---
+
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio); // 確保高解析度螢幕不模糊
+
+    // 1. [核心設定] 開啟電影級色調映射
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+    // 2. [亮度微調] 如果覺得畫面比 PlayCanvas 暗，就調到 1.2，覺得太亮就 1.0
+    renderer.toneMappingExposure = 1.5;
+
+    // 3. [色彩空間] 這是 Three.js v0.160.0 的標準規範，確保顏色不跑偏    
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    // 4. [補光燈] 確保環境光是白色的，強度建議在 0.5 ~ 0.8 之間
+    // 這能有效「沖淡」花盆底部因為地面積累的綠色反射
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    scene.add(ambientLight);
+
+    // 1. 設定 ToneMapping 類型
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    // 2. 調整曝光數值 (預設為 1，視場景亮度可調至 1.2 ~ 1.5)九曝光補償
+    renderer.toneMappingExposure = 1.0;
+    // 3. 確保色彩空間正確（現代 Three.js 必備）
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    document.body.appendChild(renderer.domElement);
+
+    const labelRenderer = new CSS2DRenderer();
+    labelRenderer.setSize(window.innerWidth, window.innerHeight);
+    labelRenderer.domElement.style.position = 'absolute';
+    labelRenderer.domElement.style.top = '0px';
+    labelRenderer.domElement.style.pointerEvents = 'none';
+    document.body.appendChild(labelRenderer.domElement);
+
+    // ===== 2. 控制器與變數 =====
+    const controls = new PointerLockControls(camera, renderer.domElement);
+    const instructions = document.getElementById('instructions');
+    renderer.domElement.addEventListener('click', () => controls.lock());
+    scene.add(controls.getObject());
+
+    // 在你的 moveForward, moveBackward 那些變數旁邊加上：
+    let isStartingAnimation = false;
+    let autoMoveSpeed = 0; // 初始速度為 0
+    let tempUpdateTimer = 0;
+
+    let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+    const velocity = new THREE.Vector3();
+    const direction = new THREE.Vector3();
+    let prevTime = performance.now();
+
+    const onKeyDown = (e) => {
+      switch (e.code) {
+        case 'KeyW': moveForward = true; break;
+        case 'KeyA': moveLeft = true; break;
+        case 'KeyS': moveBackward = true; break;
+        case 'KeyD': moveRight = true; break;
+      }
+    };
+    const onKeyUp = (e) => {
+      switch (e.code) {
+        case 'KeyW': moveForward = false; break;
+        case 'KeyA': moveLeft = false; break;
+        case 'KeyS': moveBackward = false; break;
+        case 'KeyD': moveRight = false; break;
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+
+    // ===== 3. 模型載入與邏輯函數 =====
+    const collidableObjects = [];
+    const doorObjects = [];
+
+    function createDoorLabel(mesh, text) {
+      const div = document.createElement('div');
+      div.className = 'door-label';
+      div.textContent = text;
+      mesh.userData.labelDiv = div;
+      mesh.userData.roomName = text.split(' (')[0];
+      const label = new CSS2DObject(div);
+      label.position.set(0, 2.2, 0);
+      mesh.add(label);
+    }
+
+    // --- Loading 核心邏輯 ---
+    const loadingScreen = document.getElementById('loading-screen');
+    const loaderBar = document.getElementById('loader-bar');
+    const loaderText = document.getElementById('loader-text');
+
+    const manager = new THREE.LoadingManager();
+
+    // 🟢 最終轉場：當所有資源 (HDR + GLB) 都解析完畢後執行
+    manager.onLoad = function () {
+      loaderBar.style.width = '100%'; // 強制滿格
+      loaderText.innerText = '組裝完成！準備步入...';
+
+      requestAnimationFrame(() => {
+        // 🟢 2. 這裡給予 800ms ~ 1000ms 的緩衝，讓使用者看清楚「組裝完成」
+        // 同時這段時間剛好也是 GPU 穩定畫面的黃金時間
+        setTimeout(() => {
+          loadingScreen.classList.add('fade-out');
+
+          // 啟動自動推鏡
+          autoMoveSpeed = 2.5;
+
+          setTimeout(() => {
+            loadingScreen.style.display = 'none';
+          }, 1200);
+        }, 1000); // <--- 這裡稍微拉長，質感會提升很多
+      });
+    };
+
+    // 載入 HDR
+    new EXRLoader(manager).load('hdri/studio.exr', (hdr) => {
+      // 1. 強制設定色彩空間，這能解決「灰矇矇」或「顏色偏差」的問題
+      hdr.colorSpace = THREE.LinearSRGBColorSpace;
+
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      const envTexture = pmrem.fromEquirectangular(hdr).texture;
+
+      scene.environment = envTexture;
+      // scene.background = envTexture; // 如果你也想要看到那個背景天空
+
+      pmrem.dispose();
+    });
+
+    // --- 在 renderer 初始化的地方，務必加入這幾行 ---
+    renderer.useLegacyLights = false; // 開啟物理正確光照，這對花盆立體感至關重要
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2; // 調整曝光，追上 PlayCanvas 的亮度
+
+    // --- 全局環境強度 (Three.js v155+ 支援) ---
+    scene.environmentIntensity = 1.5; // 讓 .exr 的反射效果更強烈，摺痕更明顯
+
+    // 設定解碼器路徑，通常放在你的專案 /public/draco/ 下
+    dracoLoader.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+
+    // 載入模型 (只呼叫這一次)
+    const loader = new GLTFLoader(manager);
+
+    loader.setDRACOLoader(dracoLoader);
+
+    // 3. 載入並設定 LOD
+    loader.load('models/Plant_Turtle_LOD.glb', (gltf) => {
+      const modelScene = gltf.scene;
+      const lod = new THREE.LOD();
+
+      /**
+       * 內部工具：抓取所有名稱開頭符合的物件 (解決花盆與葉子拆分問題)
+       */
+      const createLODLevel = (namePrefix) => {
+        const group = new THREE.Group();
+        modelScene.traverse((node) => {
+          if (node.isMesh && node.name.includes('Vase')) { // 假設名稱包含 Vase
+            // 1. 降低粗糙度 (Roughness)，數值越低反光越強
+            node.material.roughness = 0.1;
+
+            // 2. 增加金屬感 (Metalness)，白色塑膠或陶瓷通常給 0.1~0.3 會很有質感
+            node.material.metalness = 0.2;
+
+            // 3. 確保它有連結到環境貼圖
+            node.material.envMap = scene.environment;
+            node.material.envMapIntensity = 1.5; // 單獨加強這個物件的反射亮度
+          }
+          // 只要物件名稱開頭符合 (例如 Plant_Turtle_LOD_High)
+          if (node.isMesh && node.name.startsWith(namePrefix)) {
+            // 使用 clone() 確保原始數據不被破壞
+            group.add(node.clone());
+          }
+        });
+        return group;
+      };
+
+      // 1. 抓取完整模型 (包含花盆 _1 與葉子 _2)
+      const highRes = createLODLevel('Plant_Turtle_LOD_High');
+      const medRes = createLODLevel('Plant_Turtle_LOD_Mid');
+      const lowRes = createLODLevel('Plant_Turtle_LOD_Low');
+
+      // 2. 檢查是否至少抓到了高模
+      if (highRes.children.length > 0) {
+        // 設定不同距離的顯示等級
+        lod.addLevel(highRes, 0);   // 距離 0~15 顯示高模
+        lod.addLevel(medRes, 15);  // 距離 15~40 顯示中模
+        lod.addLevel(lowRes, 40);  // 距離 40 以上顯示低模
+
+        // 3. 計算相機前方位置，確保一進場就看得到
+        const cameraDirection = new THREE.Vector3();
+        camera.getWorldDirection(cameraDirection);
+        const targetPosition = camera.position.clone().add(cameraDirection.multiplyScalar(5));
+
+        lod.position.copy(targetPosition);
+        lod.lookAt(camera.position); // 讓植物正對相機
+
+        scene.add(lod);
+        console.log("Succuleaf 植物載入成功！包含葉子與花盆。");
+      } else {
+        console.error("錯誤：無法從 .glb 找到任何符合命名的物件。");
+        // 保底方案：如果 LOD 抓取失敗，顯示原始場景
+        scene.add(modelScene);
+      }
+    }, (xhr) => {
+      console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+    }, (error) => {
+      console.error('載入失敗:', error);
+    });
+    (xhr) => {
+      // 載入進度 (選做)
+      console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+    }, (error) => {
+      console.error('模型載入錯誤:', error);
+    };
+
+    loader.load(
+      'models/20260228cad-3d-gltf.glb',
+      (gltf) => {
+        const model = gltf.scene;
+        const roomData = {
+          "in_door1": "會議室 101 (24.5°C)",
+          "in_door2": "會議室 102 (24.3°C)",
+          "in_door3": "茶水間 (22.0°C)"
+        };
+
+        model.traverse((mesh) => {
+          if (!mesh.isMesh) return;
+          const name = mesh.name.toLowerCase();
+
+          // 碰撞與門邏輯
+          if (name.includes("wall") || (name.includes("door") && !name.includes("locker"))) {
+            if (!name.includes("floor") && !name.includes("ground")) {
+              collidableObjects.push(mesh);
+            }
+          }
+          if (name.includes("door") || mesh.name.includes("門")) {
+            doorObjects.push(mesh);
+            mesh.userData.isOpen = false;
+          }
+          if (roomData[mesh.name]) {
+            createDoorLabel(mesh, roomData[mesh.name]);
+          }
+
+          if (mesh.material.aoMap) {
+            mesh.material.aoMap.channel = 1;
+            mesh.material.aoMap.flipY = false;
+          }
+        });
+
+        scene.add(model);
+        // 預熱渲染：在黑屏消失前強制 GPU 繪製一次，載入完趁遮蓋還在時畫第一次，撤掉遮蓋（畫面已經在那裡等你了，完美銜接）
+        console.time("GPU暖機時間");
+        renderer.render(scene, camera);
+        console.timeEnd("GPU暖機時間");
+      },
+      (xhr) => {
+        if (xhr.lengthComputable) {
+          const percent = Math.round((xhr.loaded / xhr.total) * 100);
+          // 🟢 3. 當下載到 100% 時，不要只顯示 100%，直接改寫文字
+          if (percent >= 100) {
+            loaderText.innerText = `檔案下載完成，正在優化 3D 數據...`;
+          } else {
+            loaderBar.style.width = percent + '%';
+            loaderText.innerText = `正在載入數位分身... ${percent}%`;
+          }
+        }
+      }
+    );
+
+    // ===== 4. 互動與動畫迴圈 =====
+    const raycaster = new THREE.Raycaster();
+    document.addEventListener('click', () => {
+      if (!controls.isLocked) return;
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+      const intersects = raycaster.intersectObjects(doorObjects);
+      if (intersects.length > 0) {
+        const door = intersects[0].object;
+        door.userData.isOpen = !door.userData.isOpen;
+        const openAngle = door.name === "out_door" ? -Math.PI / 2 : Math.PI / 2;
+        door.rotation.y = door.userData.isOpen ? openAngle : 0;
+      }
+    });
+
+    function animate() {
+      // 陽光持續環繞
+      //sunLight.position.x = 20 * Math.cos(Date.now() * 0.001);
+      //sunLight.position.z = 20 * Math.sin(Date.now() * 0.001);
+
+      requestAnimationFrame(animate);
+
+      // 遍歷場景更新所有 LOD 物件
+      scene.traverse((object) => {
+        if (object.isLOD) {
+          object.update(camera);
+        }
+      })
+
+      const time = performance.now();
+      const delta = (time - prevTime) / 1000;
+
+      // 1. 處理自動位移 (開場質感)
+      if (autoMoveSpeed > 0.01) {
+        controls.moveForward(autoMoveSpeed * delta);
+        autoMoveSpeed *= Math.pow(0.95, delta * 60);
+      } else {
+        autoMoveSpeed = 0;
+      }
+
+      // 2. 處理玩家手動控制 (WASD + 碰撞)
+      if (controls.isLocked) {
+        velocity.x -= velocity.x * 10.0 * delta;
+        velocity.z -= velocity.z * 10.0 * delta;
+
+        direction.z = Number(moveForward) - Number(moveBackward);
+        direction.x = Number(moveRight) - Number(moveLeft);
+        direction.normalize();
+
+        const checkWall = (dirVector) => {
+          const colRaycaster = new THREE.Raycaster();
+          const worldDir = dirVector.clone().applyQuaternion(camera.quaternion);
+          worldDir.y = 0;
+          worldDir.normalize();
+          colRaycaster.set(camera.position.clone().setY(camera.position.y - 0.8), worldDir);
+          colRaycaster.far = 0.6;
+          return colRaycaster.intersectObjects(collidableObjects).length > 0;
+        };
+
+        if (moveForward || moveBackward) {
+          const moveDir = moveForward ? new THREE.Vector3(0, 0, -1) : new THREE.Vector3(0, 0, 1);
+          if (checkWall(moveDir)) { velocity.z = 0; }
+          else { velocity.z -= direction.z * 30.0 * delta; }
+        }
+
+        if (moveLeft || moveRight) {
+          const moveDir = moveLeft ? new THREE.Vector3(-1, 0, 0) : new THREE.Vector3(1, 0, 0);
+          if (checkWall(moveDir)) { velocity.x = 0; }
+          else { velocity.x -= direction.x * 30.0 * delta; }
+        }
+
+        controls.moveForward(-velocity.z * delta);
+        controls.moveRight(-velocity.x * delta);
+      }
+
+      // 3. 🟢 標籤邏輯 (淡出 + 溫度隨機變動)
+      doorObjects.forEach((door) => {
+        if (door.userData.labelDiv) {
+          // --- 計算距離決定透明度 ---
+          const doorPos = new THREE.Vector3();
+          door.getWorldPosition(doorPos);
+          const dist = camera.position.distanceTo(doorPos);
+          door.userData.labelDiv.style.opacity = 1.0 - THREE.MathUtils.smoothstep(dist, 5, 15);
+
+          if (Math.random() > 0.99) {
+            const temp = (24 + Math.random()).toFixed(1);
+            door.userData.labelDiv.textContent = `${door.userData.roomName} (${temp}°C)`;
+          }
+        }
+      });
+
+      // 4. 更新時間並執行渲染
+      prevTime = time;
+      renderer.render(scene, camera);
+      labelRenderer.render(scene, camera);
+
+    } // 👈 確保這個大括號把上面的邏輯全部包住
+
+    animate(); // 啟動
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      labelRenderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+
+</html>
